@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pathfinding Visualizer</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Pathfinding Visualizer</h1>
+        </header>
+
+        <div class="controls">
+            <div class="control-group">
+                <label>Algorithm:</label>
+                <select id="algorithm">
+                    <option value="bfs">Breadth-First Search (BFS)</option>
+                    <option value="dfs">Depth-First Search (DFS)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label>Draw Mode:</label>
+                <div class="mode-buttons">
+                    <button class="mode-btn active" data-mode="wall">Wall</button>
+                    <button class="mode-btn" data-mode="start">Start</button>
+                    <button class="mode-btn" data-mode="end">End</button>
+                    <button class="mode-btn" data-mode="erase">Erase</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label>Speed:</label>
+                <input type="range" id="speed" min="10" max="200" value="50">
+                <span id="speed-label">50ms</span>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button id="visualize-btn" class="btn primary">▶ Visualize</button>
+            <button id="clear-btn" class="btn">Clear Path</button>
+            <button id="reset-btn" class="btn danger">Reset All</button>
+            <button id="generate-btn" class="btn">Generate Maze</button>
+        </div>
+
+        <div class="legend">
+            <div class="legend-item">
+                <span class="box start"></span> Start
+            </div>
+            <div class="legend-item">
+                <span class="box end"></span> End
+            </div>
+            <div class="legend-item">
+                <span class="box wall"></span> Wall
+            </div>
+            <div class="legend-item">
+                <span class="box visited"></span> Visited
+            </div>
+            <div class="legend-item">
+                <span class="box path"></span> Path
+            </div>
+        </div>
+
+        <div class="grid-wrapper">
+            <div id="grid" class="grid"></div>
+        </div>
+
+        <div class="stats">
+            <div class="stat">
+                <span class="stat-label">Algorithm</span>
+                <span class="stat-value" id="stat-algo">-</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Nodes Explored</span>
+                <span class="stat-value" id="stat-explored">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Path Length</span>
+                <span class="stat-value" id="stat-path">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Status</span>
+                <span class="stat-value" id="stat-status">Ready</span>
+            </div>
+        </div>
+
+        <div class="info-cards">
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+        let gridState = null;
+        let currentMode = 'wall';
+        let isMouseDown = false;
+        let isRunning = false;
+        let speed = 50;
+
+        function showToast(message, type) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast show ' + type;
+            setTimeout(() => toast.className = 'toast', 3000);
+        }
+
+        async function api(endpoint, method = 'GET', data = null) {
+            const options = { method, headers: { 'Content-Type': 'application/json' } };
+            if (data) options.body = JSON.stringify(data);
+            const response = await fetch(endpoint, options);
+            return response.json();
+        }
+
+        function createGrid(rows, cols) {
+            const grid = document.getElementById('grid');
+            grid.innerHTML = '';
+            grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'cell';
+                    cell.dataset.row = r;
+                    cell.dataset.col = c;
+                    
+                    cell.addEventListener('mousedown', (e) => {
+                        if (isRunning) return;
+                        isMouseDown = true;
+                        handleCell(cell);
+                    });
+                    
+                    cell.addEventListener('mouseenter', () => {
+                        if (isRunning || !isMouseDown) return;
+                        if (currentMode === 'wall' || currentMode === 'erase') {
+                            handleCell(cell);
+                        }
+                    });
+                    
+                    cell.addEventListener('mouseup', () => isMouseDown = false);
+                    
+                    grid.appendChild(cell);
+                }
+            }
+        }
+
+        function renderGrid() {
+            if (!gridState) return;
+            
+            document.querySelectorAll('.cell').forEach(cell => {
+                const r = parseInt(cell.dataset.row);
+                const c = parseInt(cell.dataset.col);
+                const value = gridState.grid[r][c];
+                
+                cell.className = 'cell';
+                cell.textContent = '';
+                
+                if (value === 1) cell.classList.add('wall');
+                else if (value === 2) { cell.classList.add('start'); cell.textContent = 'S'; }
+                else if (value === 3) { cell.classList.add('end'); cell.textContent = 'E'; }
+            });
+        }
+
+        async function handleCell(cell) {
+            const row = parseInt(cell.dataset.row);
+            const col = parseInt(cell.dataset.col);
+            const type = currentMode === 'erase' ? 'clear' : currentMode;
+            
+            const result = await api('/api/cell', 'POST', { row, col, type });
+            if (result.success) {
+                gridState = result.state;
+                renderGrid();
+            }
+        }
+
+        function clearVisualization() {
+            document.querySelectorAll('.cell').forEach(cell => {
+                cell.classList.remove('visited', 'path');
+            });
+        }
+
+        async function visualize() {
+            if (isRunning) return;
+            if (!gridState.start || !gridState.end) {
+                showToast('Please place start and end points!', 'error');
+                return;
+            }
+
+            isRunning = true;
+            document.getElementById('visualize-btn').disabled = true;
+            document.getElementById('stat-status').textContent = 'Running...';
+            clearVisualization();
+
+            const algorithm = document.getElementById('algorithm').value;
+            const result = await api('/api/solve', 'POST', { algorithm });
+
+            document.getElementById('stat-algo').textContent = algorithm.toUpperCase();
+            document.getElementById('stat-explored').textContent = result.nodes_explored;
+            document.getElementById('stat-path').textContent = result.path_length || 'No path';
+
+            for (let i = 0; i < result.visited.length; i++) {
+                const node = result.visited[i];
+                const cell = document.querySelector(`[data-row="${node.row}"][data-col="${node.col}"]`);
+                
+                if (cell && !cell.classList.contains('start') && !cell.classList.contains('end')) {
+                    cell.classList.add('visited');
+                }
+                
+                await new Promise(r => setTimeout(r, speed));
+            }
+
+            if (result.success) {
+                for (let i = 0; i < result.path.length; i++) {
+                    const node = result.path[i];
+                    const cell = document.querySelector(`[data-row="${node.row}"][data-col="${node.col}"]`);
+                    
+                    if (cell) {
+                        cell.classList.remove('visited');
+                        cell.classList.add('path');
+                    }
+                    
+                    await new Promise(r => setTimeout(r, speed * 2));
+                }
+                document.getElementById('stat-status').textContent = 'Path Found!';
+                showToast('Path found!', 'success');
+            } else {
+                document.getElementById('stat-status').textContent = 'No Path';
+                showToast('No path exists!', 'error');
+            }
+
+            isRunning = false;
+            document.getElementById('visualize-btn').disabled = false;
+        }
+
+        async function init() {
+            gridState = await api('/api/grid');
+            createGrid(gridState.rows, gridState.cols);
+            renderGrid();
+
+            document.addEventListener('mouseup', () => isMouseDown = false);
+
+            document.querySelectorAll('.mode-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    currentMode = btn.dataset.mode;
+                });
+            });
+
+            document.getElementById('speed').addEventListener('input', (e) => {
+                speed = 210 - parseInt(e.target.value);
+                document.getElementById('speed-label').textContent = speed + 'ms';
+            });
+
+            document.getElementById('visualize-btn').addEventListener('click', visualize);
+
+            document.getElementById('clear-btn').addEventListener('click', () => {
+                if (!isRunning) clearVisualization();
+            });
+
+            document.getElementById('reset-btn').addEventListener('click', async () => {
+                if (isRunning) return;
+                gridState = await api('/api/reset', 'POST');
+                renderGrid();
+                clearVisualization();
+                showToast('Grid reset!', 'success');
+            });
+
+            document.getElementById('generate-btn').addEventListener('click', async () => {
+                if (isRunning) return;
+                gridState = await api('/api/generate', 'POST', { density: 0.3 });
+                renderGrid();
+                clearVisualization();
+                showToast('Maze generated!', 'success');
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>
